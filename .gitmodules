@@ -2,3 +2,11 @@
 	path = extern/pybind11
 	url = ../../pybind/pybind11
 	branch = stable
+[submodule "extern/RcppEigen"]
+	path = extern/RcppEigen
+	url = ../../RcppCore/RcppEigen
+	branch = master
+[submodule "extern/Rcpp"]
+	path = extern/Rcpp
+	url = ../../RcppCore/Rcpp
+	branch = master
