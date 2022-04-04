@@ -1,4 +1,6 @@
+import rgaspy
 import numpy as np
+from functools import partial
 from scipy.spatial import distance_matrix
 from scipy.optimize import minimize
 
@@ -10,23 +12,19 @@ class rgasp:
                  X: np.ndarray=None,
                  R0: list=None,
                  zero_mean: bool=True,
-                 alpha: np.ndarray=None,
-                 nugget: float=0.0,
-                 nugget_est: bool=False,
-                 method: str="post_mode",
                  prior_choice: str='ref_approx',
+                 prior_params: dict={"a": 0.2, "b": None},
                  kernel_type: list=["matern_5_2"],
+                 alpha: np.ndarray=None,
                  isotropic: bool=False):
         
                     self.input = input
                     self.output = output
                     self.X = X
                     self.zero_mean = zero_mean
-                    self.nugget = nugget
-                    self.nugget_est = nugget_est
-                    self.method = method
                     self.prior_choice = prior_choice
                     self.isotropic = isotropic
+                    self.prior_params = prior_params
                     
                     if len(input.shape)==1:
                         raise ValueError("Input should be a matrix")
@@ -39,6 +37,13 @@ class rgasp:
                     if alpha is None:
                         alpha = np.array([1.9]*input.shape[1])
                     
+                    if "a" not in prior_params or "b" not in prior_params:
+                        raise ValueError("Dictionary prior_params missing keys a or b")
+                    if not isinstance(prior_params["a"], float):
+                        raise ValueError("Parameter a in prior_params should be a float")
+                    if prior_params["b"] is None:
+                        prior_params["b"] = (1.0/len(output)**d)*(prior_params["a"] + d)
+                    
                     if self.isotropic:
                         self.p = 1
                         self.alpha = alpha[0]
@@ -49,16 +54,16 @@ class rgasp:
                     if self.zero_mean:
                         self.X = np.zeros((len(output),1))
                         self.q = 0
+                        self.zero_mean = "Yes"
                     elif not self.zero_mean and self.X is None:
                         self.X = np.ones((len(output),1))
                         self.q = 1
+                        self.zero_mean = "No"
                     elif not self.zero_mean and self.X is not None:
                         if self.X.shape[0]!=self.num_obs or self.X.shape[1]!=1:
                             raise ValueError("X's shape should be [num_obs, 1]")
                         self.q = 1
-                    
-                    if method not in ["post_mode", "mle", "mmle"]:
-                        raise ValueError("The method should be post_mode, mle or mmle.")
+                        self.zero_mean = "No"
                     
                     if isinstance(kernel_type, str):
                         kernel_type = [kernel_type]
@@ -87,7 +92,8 @@ class rgasp:
                             kernel_type_num[i_p] = 5
                         else:
                             raise ValueError("Kernel types must be matern_5_2, matern_3_2, pow_exp, periodic_gauss, or peridioc_exp")
-                            
+                    self.kernel_type_num = kernel_type_num
+                    
                     if R0 is None:
                         if not self.isotropic:
                             self.R0 = []
@@ -116,11 +122,117 @@ class rgasp:
                     else:
                         self.CL[0] = np.max(self.R0[0])/self.num_obs
     
-    def fit(self, a=0.2, b=None, optimization="lbfgs", lower_bound=True, max_eval=None, initial_values=None, num_initial_values=2):
+    def search_lower_bounds(self):
         raise NotImplementedError()
     
+    def get_lower_bounds(self, lower_bound, nugget_est):
+        if lower_bound:
+            lb = self.search_lower_bounds()
+            if nugget_est:
+                lb = np.concatenate([lb, -np.Inf])
+        else:
+            # lb = np.zeros(self.p)
+            # for idx in range(self.p):
+            #     ilb = -np.log(0.1)/((np.max(self.input[:,idx])-np.min(self.input[:,idx]))**self.p)
+            #     lb[idx] = ilb
+            if nugget_est:
+                lb = np.array([np.Inf]*(self.p+1))
+            else:
+                lb = np.array([np.Inf]*self.p)
+        return lb
+    
+    def get_initial_values(self, num_initial_values):
+        raise NotImplementedError()
+    
+    def fit(self, method: str="post_mode", nugget: float=0.0, nugget_est: bool=False, lower_bound: bool=True, optimization: str="L-BFGS-B", max_eval: int=None, initial_values=None, num_initial_values=2):
+        
+        if method not in ["post_mode", "mle", "mmle"]:
+            raise ValueError("The method should be post_mode, mle or mmle.")
+        
+        if optimization not in ["L-BFGS-B"]:
+            raise ValueError("Only LBFGS is supported at the moment.")
+        
+        lbs = self.get_lower_bounds(lower_bound, nugget_est)
+        bounds = []
+        for lb in lbs:
+            bounds.append((lb, None))
+        bounds = tuple(bounds)    
+                
+        if initial_values is None:
+            initial_values = self.get_initial_values(lb, num_initial_values)
+            
+        for i_ini in range(num_initial_values):
+            if nugget_est:
+                ini_value=initial_values[i_ini]
+            else:
+                ini_value=initial_values[i_ini,1:self.p]
+        
+            log_post=-np.Inf
+            if method=="post_mode":
+                if self.prior_choice=="ref_approx":
+                    def neg_log_marginal_post_approx_ref(param, nugget, nugget_est, R0, X, zero_mean, output, CL, a, b, kernel_type, alpha):
+                        # do I need to create np.ndarray's ?
+                        lml=rgaspy.log_marginal_lik(param, nugget, nugget_est, R0, X, zero_mean, output, kernel_type, alpha)
+                        lp=rgaspy.log_approx_ref_prior(param, nugget, nugget_est, CL, a, b)
+                        return -lml-lp
+                    def neg_log_marginal_post_approx_ref_deriv(param, nugget, nugget_est, R0, X, zero_mean, output, CL, a, b, kernel_type, alpha):
+                        # do I need to create np.ndarray's ?
+                        lml_dev=rgaspy.log_marginal_lik_deriv(param, nugget, nugget_est, R0, X, zero_mean, output, kernel_type, alpha)
+                        lp_dev=rgaspy.log_approx_ref_prior_deriv(param, nugget, nugget_est, CL, a, b)
+                        return -(lml_dev+lp_dev)*np.exp(param)
+                    
+                    a, b = self.prior_params["a"], self.prior_params["b"]
+                    fun = partial(neg_log_marginal_post_approx_ref, nugget, nugget_est, self.R0, self.X, self.zero_mean, self.output, self.CL, a, b, self.kernel_type, self.alpha)
+                    jac = partial(neg_log_marginal_post_approx_ref_deriv, nugget, nugget_est, self.R0, self.X, self.zero_mean, self.output, self.CL, a, b, self.kernel_type, self.alpha)
+                    
+                    tt_all = minimize(fun=fun, x0=ini_value, method=optimization, jac=jac, 
+                                      bounds=bounds, options={'maxfun': max_eval, 'maxiter': 15000, 'maxls': 20})
+                    
+                elif self.prior_choice in ["ref_xi", "ref_gamma"]:
+                    # fun = rgaspy.neg_log_marginal_post_ref
+                    # tt_all = minimize(fun=fun, x0=ini_value, method=optimization, jac=None, 
+                    #                   bounds=bounds, options={'maxfun': max_eval, 'maxiter': 15000, 'maxls': 20})
+                    raise NotImplementedError()
+            elif method=="mle":
+                # fun = rgaspy.neg_log_profile_lik
+                # jac = rgaspy.neg_log_profile_lik_deriv
+                # tt_all = minimize(fun=fun, x0=ini_value, method=optimization, jac=jac, 
+                #                     bounds=bounds, options={'maxfun': max_eval, 'maxiter': 15000, 'maxls': 20})
+                raise NotImplementedError()
+            elif method=="mmle":
+                # fun = rgaspy.neg_log_marginal_lik
+                # jac = rgaspy.neg_log_marginal_lik_deriv
+                # tt_all = minimize(fun=fun, x0=ini_value, method=optimization, jac=jac, 
+                #                     bounds=bounds, options={'maxfun': max_eval, 'maxiter': 15000, 'maxls': 20})
+                raise NotImplementedError()
+
+            if tt_all.success:
+                if not nugget_est:
+                    nugget_par = nugget
+                else:
+                    nugget_par = np.exp(tt_all.x)[-1]
+                    
+                if -tt_all.fun > log_post:
+                    log_lik=-tt_all.fun
+                    log_post=-tt_all.fun
+                    if nugget_est:
+                        self.beta_hat = np.exp(tt_all.x)[1:self.p]
+                        self.nugget_hat = np.exp(tt_all.x)[-1]
+                    else:
+                        self.beta_hat = np.exp(tt_all.x)
+                        self.nugget_hat = nugget
+        return log_post
+    
+    def construct_rgasp(self, beta_hat: np.array, nugget: float):
+        ret = rgaspy.construct_rgasp(beta_hat, nugget, self.R0, self.X, 
+                                     self.zero_mean, self.output, self.kernel_type_num, self.alpha)
+        return ret
+     
     def predict(self):
         raise NotImplementedError()
+    
+    # def __str__(self):
+    #     raise NotImplementedError()
     
 if __name__ == "__main__":
     
