@@ -4,7 +4,7 @@ from functools import partial
 from scipy.spatial import distance_matrix
 from scipy.optimize import minimize
 
-class rgasp:
+class RGaSPModel:
     
     def __init__(self,
                  input: np.ndarray,
@@ -141,7 +141,7 @@ class rgasp:
                 lb = np.array([np.Inf]*self.p)
         return lb
     
-    def get_initial_values(self, num_initial_values):
+    def get_initial_values(self, lb, num_initial_values):
         raise NotImplementedError()
     
     def fit(self, method: str="post_mode", nugget: float=0.0, nugget_est: bool=False, lower_bound: bool=True, optimization: str="L-BFGS-B", max_eval: int=None, initial_values=None, num_initial_values=2):
@@ -156,7 +156,7 @@ class rgasp:
         bounds = []
         for lb in lbs:
             bounds.append((lb, None))
-        bounds = tuple(bounds)    
+        bounds = tuple(bounds)
                 
         if initial_values is None:
             initial_values = self.get_initial_values(lb, num_initial_values)
@@ -171,22 +171,23 @@ class rgasp:
             if method=="post_mode":
                 if self.prior_choice=="ref_approx":
                     def neg_log_marginal_post_approx_ref(param, nugget, nugget_est, R0, X, zero_mean, output, CL, a, b, kernel_type, alpha):
-                        # do I need to create np.ndarray's ?
                         lml=rgaspy.log_marginal_lik(param, nugget, nugget_est, R0, X, zero_mean, output, kernel_type, alpha)
                         lp=rgaspy.log_approx_ref_prior(param, nugget, nugget_est, CL, a, b)
                         return -lml-lp
                     def neg_log_marginal_post_approx_ref_deriv(param, nugget, nugget_est, R0, X, zero_mean, output, CL, a, b, kernel_type, alpha):
-                        # do I need to create np.ndarray's ?
                         lml_dev=rgaspy.log_marginal_lik_deriv(param, nugget, nugget_est, R0, X, zero_mean, output, kernel_type, alpha)
                         lp_dev=rgaspy.log_approx_ref_prior_deriv(param, nugget, nugget_est, CL, a, b)
                         return -(lml_dev+lp_dev)*np.exp(param)
                     
                     a, b = self.prior_params["a"], self.prior_params["b"]
-                    fun = partial(neg_log_marginal_post_approx_ref, nugget, nugget_est, self.R0, self.X, self.zero_mean, self.output, self.CL, a, b, self.kernel_type, self.alpha)
-                    jac = partial(neg_log_marginal_post_approx_ref_deriv, nugget, nugget_est, self.R0, self.X, self.zero_mean, self.output, self.CL, a, b, self.kernel_type, self.alpha)
-                    
-                    tt_all = minimize(fun=fun, x0=ini_value, method=optimization, jac=jac, 
-                                      bounds=bounds, options={'maxfun': max_eval, 'maxiter': 15000, 'maxls': 20})
+
+                    tt_all = minimize(fun=neg_log_marginal_post_approx_ref,
+                                      x0=ini_value, 
+                                      args=(nugget, nugget_est, self.R0, self.X, self.zero_mean, self.output, self.CL, a, b, self.kernel_type, self.alpha),
+                                      method=optimization, 
+                                      jac=neg_log_marginal_post_approx_ref_deriv, 
+                                      bounds=bounds, 
+                                      options={'maxfun': max_eval, 'maxiter': 15000, 'maxls': 20})
                     
                 elif self.prior_choice in ["ref_xi", "ref_gamma"]:
                     # fun = rgaspy.neg_log_marginal_post_ref
@@ -238,4 +239,4 @@ if __name__ == "__main__":
     
     X_train = np.random.randn(100,2)
     Y_train = np.random.randn(100)
-    mode = rgasp(input=X_train, output=Y_train, zero_mean=True)
+    model = RGaSPModel(input=X_train, output=Y_train, zero_mean=True)
