@@ -8,6 +8,10 @@ typedef std::vector<std::map<std::string, int> > mp_container;
 
 namespace py = pybind11;
 
+double test_objective_function(Eigen::VectorXd & x, double & param) {
+  return (x(0) - param)*(x(0) - param) + x(1)*x(1);
+}
+
 Eigen::MatrixXd matern_5_2_funct (const Eigen::MatrixXd &d, double beta_i){
   //inline static Mat matern_5_2_funct (const Eigen::MatrixXd & d, double beta_i){
   const double cnst = sqrt(5.0);
@@ -1672,4 +1676,5 @@ PYBIND11_MODULE(rgaspy, m) {
   m.def("construct_ppgasp", &construct_ppgasp);
   m.def("pred_ppgasp", &pred_ppgasp);
   m.def("test_const_column", &test_const_column);
+  m.def("test_objective_function", &test_objective_function);
 }
